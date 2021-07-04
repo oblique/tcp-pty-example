@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <sys/signalfd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -36,17 +37,44 @@ ssize_t write_all(int fd, const void *buf, size_t count)
     return wsz;
 }
 
+int create_signalfd()
+{
+    sigset_t mask;
+    int fd;
+    int rc;
+
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGINT);
+    sigaddset(&mask, SIGTERM);
+    sigaddset(&mask, SIGCHLD);
+
+    rc = sigprocmask(SIG_BLOCK, &mask, NULL);
+    if (rc < 0) {
+        perror("sigprocmask");
+        return -1;
+    }
+
+    fd = signalfd(-1, &mask, 0);
+    if (fd < 0) {
+        perror("signalfd");
+        return -1;
+    }
+
+    return fd;
+}
+
 int main(int argc, char *argv[])
 {
     int listen_sock = -1;
     int sock = -1;
     int pty_master = -1;
+    int signal_fd = -1;
     int port;
     int rc;
     struct sockaddr_in sin;
     pid_t pid;
     int child_exited = 0;
-    struct pollfd pfds[2];
+    struct pollfd pfds[3];
 
     if (argc != 2) {
         printf("usage: tcp-pty-server <port>\n");
@@ -93,6 +121,11 @@ int main(int argc, char *argv[])
 
     close(listen_sock);
     listen_sock = -1;
+
+    signal_fd = create_signalfd();
+    if (signal_fd < 0) {
+        goto err;
+    }
 
     pty_master = posix_openpt(O_RDWR);
     if (pty_master < 0) {
@@ -150,6 +183,8 @@ int main(int argc, char *argv[])
     pfds[0].events = POLLIN;
     pfds[1].fd = sock;
     pfds[1].events = POLLIN;
+    pfds[2].fd = signal_fd;
+    pfds[2].events = POLLIN;
 
     while (1) {
         char buf[4096];
@@ -160,14 +195,6 @@ int main(int argc, char *argv[])
         rc = poll(pfds, elemof(pfds), 200);
         if (rc < 0)
             break;
-        else if (rc == 0) {
-            rc = waitpid(pid, NULL, WNOHANG);
-            if (rc > 0) {
-                child_exited = 1;
-                break;
-            }
-            continue;
-        }
 
         for (i = 0; i < elemof(pfds); i++) {
             if (pfds[i].revents & POLLNVAL)
@@ -197,6 +224,26 @@ int main(int argc, char *argv[])
                     }
 
                     write_all(sock, buf, rsz);
+                } else if (pfds[i].fd == signal_fd) {
+                    struct signalfd_siginfo fdsi;
+
+                    rsz = read(signal_fd, &fdsi, sizeof(fdsi));
+                    if (rsz != sizeof(fdsi)) {
+                        break_outer = 1;
+                        break;
+                    }
+
+                    if (fdsi.ssi_signo == SIGINT || fdsi.ssi_signo == SIGTERM) {
+                        break_outer = 1;
+                        break;
+                    } else if (fdsi.ssi_signo == SIGCHLD) {
+                        rc = waitpid(pid, NULL, WNOHANG);
+                        if (rc > 0) {
+                            break_outer = 1;
+                            child_exited = 1;
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -205,16 +252,22 @@ int main(int argc, char *argv[])
             break;
     }
 
-    if (!child_exited)
+    if (!child_exited) {
+        kill(pid, SIGKILL);
         waitpid(pid, NULL, 0);
+    }
 
+    close(signal_fd);
     close(sock);
     close(pty_master);
+
     return 0;
 
 err:
     if (listen_sock != -1)
         close(listen_sock);
+    if (signal_fd != -1)
+        close(signal_fd);
     if (sock != -1)
         close(sock);
     if (pty_master != -1)
