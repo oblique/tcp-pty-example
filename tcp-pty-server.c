@@ -94,6 +94,13 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    int flag = 1;
+    rc = setsockopt(listen_sock, SOL_SOCKET, SO_REUSEADDR, &flag, sizeof(flag));
+    if (rc < 0) {
+        perror("setsockopt(SO_REUSEADDR)");
+        goto err;
+    }
+
     memset(&sin, 0, sizeof(sin));
     sin.sin_family = AF_INET;
     sin.sin_addr.s_addr = inet_addr("127.0.0.1");
