@@ -73,8 +73,8 @@ int main(int argc, char *argv[])
     sin.sin_port = htons(port);
 
     if (rc == 0) {
-        printf("Invalid ip\n");
-        return 1;
+        fprintf(stderr, "Invalid ip\n");
+        goto err;
     }
 
     rc = connect(sock, (struct sockaddr *)&sin, sizeof(sin));

@@ -77,14 +77,14 @@ int main(int argc, char *argv[])
     struct pollfd pfds[3];
 
     if (argc != 2) {
-        printf("usage: tcp-pty-server <port>\n");
+        fprintf(stderr, "usage: tcp-pty-server <port>\n");
         return 1;
     }
 
     port = atoi(argv[1]);
 
     if (port == 0 || port > 0xffff) {
-        printf("Invalid port\n");
+        fprintf(stderr, "Invalid port\n");
         return 1;
     }
 
